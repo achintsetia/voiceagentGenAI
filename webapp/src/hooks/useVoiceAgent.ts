@@ -14,6 +14,14 @@ const GEMINI_LIVE_MODEL = "gemini-3.1-flash-live-preview";
 const INPUT_SAMPLE_RATE = 16000;  // Gemini Live input: 16 kHz PCM
 const OUTPUT_SAMPLE_RATE = 24000; // Gemini Live output: 24 kHz PCM
 
+// Phrases that signal the user wants to end the session.
+const TERMINAL_PHRASES = [
+  "thank you", "thanks", "goodbye", "good bye", "bye", "bye bye",
+  "see you", "see ya", "that's all", "thats all", "that will be all",
+  "i'm done", "im done", "we're done", "that's it", "thats it",
+  "end session", "talk to you later", "take care",
+];
+
 const log = createLogger("VoiceAgent");
 
 function buildSystemInstruction(userName: string | null): string {
@@ -89,6 +97,9 @@ export function useVoiceAgent(userName: string | null = null) {
   // Mic packet counter — increments every onaudioprocess frame, used for throttled logging
   const micPacketCountRef = useRef<number>(0);
 
+  // Set to true when user says a terminal phrase; session closes after the agent's next turn.
+  const pendingGoodbyeRef = useRef<boolean>(false);
+
   const addMessage = useCallback((role: "user" | "assistant", text: string) => {
     if (!text.trim()) return;
     setMessages((prev) => [
@@ -134,6 +145,41 @@ export function useVoiceAgent(userName: string | null = null) {
     toneCtxRef.current?.close();
     toneCtxRef.current = null;
     log.debug("Connecting tone stopped");
+  }, []);
+
+  // Satisfying G-major cascade (G5 → E5 → C5) played when the call ends.
+  // Triangle + sine layers give a warm bell-like timbre; staggered onsets create
+  // a chord bloom that resolves on the root (C5) — short, pleasing, addictive.
+  const playEndCallTone = useCallback(() => {
+    try {
+      const ctx = new AudioContext();
+      const notes = [
+        { freq: 783.99, delay: 0,    peakGain: 0.22, decay: 0.50 },   // G5
+        { freq: 659.25, delay: 0.13, peakGain: 0.18, decay: 0.58 },   // E5
+        { freq: 523.25, delay: 0.28, peakGain: 0.30, decay: 0.75 },   // C5 — root, longest
+      ];
+      notes.forEach(({ freq, delay, peakGain, decay }) => {
+        (["triangle", "sine"] as OscillatorType[]).forEach((type, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = type;
+          osc.frequency.value = freq;
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          const t = ctx.currentTime + delay;
+          const g = peakGain * (i === 0 ? 1 : 0.4); // sine layer at 40% adds warmth
+          gain.gain.setValueAtTime(0, t);
+          gain.gain.linearRampToValueAtTime(g, t + 0.008);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + decay);
+          osc.start(t);
+          osc.stop(t + decay + 0.05);
+        });
+      });
+      setTimeout(() => ctx.close().catch(() => {}), 1600);
+      log.info("End call tone played");
+    } catch (e) {
+      log.error("End call tone error", e);
+    }
   }, []);
 
   const getPlaybackContext = useCallback(() => {
@@ -204,6 +250,7 @@ export function useVoiceAgent(userName: string | null = null) {
     nextPlayTimeRef.current = 0;
     pendingAssistantTextRef.current = "";
     micPacketCountRef.current = 0;
+    pendingGoodbyeRef.current = false;
 
   }, [stopConnectingTone]);
 
@@ -279,6 +326,13 @@ export function useVoiceAgent(userName: string | null = null) {
                 addMessage("assistant", pendingAssistantTextRef.current);
                 pendingAssistantTextRef.current = "";
               }
+              // If user said a terminal phrase, play end-call tone then close after audio drains.
+              if (pendingGoodbyeRef.current) {
+                pendingGoodbyeRef.current = false;
+                log.info("Ending session after terminal goodbye phrase");
+                playEndCallTone();
+                setTimeout(() => stopSession(), 1300);
+              }
             }
 
             // User speech transcription
@@ -286,6 +340,14 @@ export function useVoiceAgent(userName: string | null = null) {
             if (inputTranscript) {
               log.info(`User said: "${inputTranscript}"`);
               addMessage("user", inputTranscript);
+              // Detect terminal phrases — let agent finish its goodbye, then auto-close.
+              if (!pendingGoodbyeRef.current) {
+                const lower = inputTranscript.toLowerCase();
+                if (TERMINAL_PHRASES.some((p) => lower.includes(p))) {
+                  log.info("Terminal phrase detected — will end session after agent responds");
+                  pendingGoodbyeRef.current = true;
+                }
+              }
             }
           },
 
@@ -356,7 +418,7 @@ export function useVoiceAgent(userName: string | null = null) {
       setIsConnecting(false);
       stopSession();
     }
-  }, [addMessage, enqueueAudio, stopSession, playConnectingTone, stopConnectingTone, userName]);
+  }, [addMessage, enqueueAudio, stopSession, playConnectingTone, stopConnectingTone, playEndCallTone, userName]);
 
   const toggleListening = useCallback(() => {
     if (isListening || isConnecting) {
