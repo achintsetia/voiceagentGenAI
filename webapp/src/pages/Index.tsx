@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
-import { Mic, MessageSquare, ChevronLeft, User, Bot } from "lucide-react";
+import { Mic, MessageSquare, ChevronLeft, User, Bot, LogIn, LogOut } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/hooks/useAuth";
 
 interface Message {
   id: string;
@@ -65,6 +66,7 @@ const Index = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeConversation, setActiveConversation] = useState<Conversation>(sampleConversations[0]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { user, loading, signInWithGoogle, logout } = useAuth();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -74,72 +76,115 @@ const Index = () => {
     date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   return (
-    <div className="fixed inset-0 flex overflow-hidden bg-gradient-to-br from-[hsl(220,40%,95%)] via-[hsl(240,30%,92%)] to-[hsl(260,35%,90%)]">
+    <div className="fixed inset-0 flex flex-col bg-gradient-to-br from-[hsl(220,40%,95%)] via-[hsl(240,30%,92%)] to-[hsl(260,35%,90%)]">
       {/* Ambient glow */}
       <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full bg-[hsl(260,60%,75%)] opacity-20 blur-[120px] pointer-events-none" />
 
-      {/* Day-wise conversation sidebar */}
-      <div
-        className={cn(
-          "absolute md:relative z-30 h-full transition-all duration-300 ease-in-out flex flex-col",
-          "bg-white/60 backdrop-blur-2xl border-r border-[hsl(260,30%,85%)]/40",
-          sidebarOpen ? "w-72 translate-x-0" : "w-0 -translate-x-full md:w-72 md:translate-x-0"
-        )}
-      >
-        <div className="p-5 border-b border-[hsl(260,30%,85%)]/40 flex-shrink-0">
-          <h2 className="text-sm font-semibold tracking-wide uppercase text-[hsl(260,30%,40%)]">
-            Conversations
-          </h2>
-        </div>
-        <ScrollArea className="flex-1">
-          <div className="p-3 space-y-1">
-            {sampleConversations.map((conv) => (
-              <button
-                key={conv.id}
-                onClick={() => {
-                  setActiveConversation(conv);
-                  setSidebarOpen(false);
-                }}
-                className={cn(
-                  "w-full text-left px-4 py-3 rounded-xl transition-all duration-200 cursor-pointer",
-                  "hover:bg-[hsl(260,40%,90%)]/60",
-                  activeConversation.id === conv.id
-                    ? "bg-[hsl(260,50%,55%)]/10 border border-[hsl(260,50%,55%)]/20"
-                    : "border border-transparent"
-                )}
-              >
-                <p className="text-sm font-medium text-[hsl(260,30%,30%)]">{conv.label}</p>
-                <p className="text-xs text-[hsl(260,20%,55%)] mt-0.5 truncate">
-                  {conv.messages[conv.messages.length - 1]?.text}
-                </p>
-              </button>
-            ))}
-          </div>
-        </ScrollArea>
-      </div>
-
-      {/* Overlay for mobile sidebar */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 z-20 bg-black/20 backdrop-blur-sm md:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-
-      {/* Main content */}
-      <div className="relative flex-1 flex flex-col items-center min-w-0">
-        {/* Top bar */}
-        <div className="w-full flex items-center px-4 py-3 gap-3 flex-shrink-0 z-10">
+      {/* Top bar — full width */}
+      <header className="relative z-40 flex-shrink-0 flex items-center justify-between px-4 h-14 bg-white/60 backdrop-blur-2xl border-b border-[hsl(260,30%,85%)]/40">
+        <div className="flex items-center gap-3">
           <button
             onClick={() => setSidebarOpen((p) => !p)}
-            className="md:hidden p-2 rounded-lg hover:bg-[hsl(260,30%,85%)]/40 transition-colors cursor-pointer"
+            className="p-2 rounded-lg hover:bg-[hsl(260,30%,85%)]/40 transition-colors cursor-pointer"
           >
-            {sidebarOpen ? <ChevronLeft size={20} className="text-[hsl(260,30%,40%)]" /> : <MessageSquare size={20} className="text-[hsl(260,30%,40%)]" />}
+            {sidebarOpen
+              ? <ChevronLeft size={20} className="text-[hsl(260,30%,40%)]" />
+              : <MessageSquare size={20} className="text-[hsl(260,30%,40%)]" />}
           </button>
-          <h1 className="text-base font-medium text-[hsl(260,30%,35%)]">
-            {activeConversation.label}
-          </h1>
+          <span className="text-base font-semibold tracking-tight text-[hsl(260,30%,30%)]">
+            Voice Agent
+          </span>
         </div>
+
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-[hsl(260,25%,50%)]">{activeConversation.label}</span>
+
+          {!loading && user && (
+            <img
+              src={user.photoURL ?? ""}
+              alt={user.displayName ?? "User"}
+              className="w-8 h-8 rounded-full object-cover border-2 border-[hsl(260,50%,55%)]/40"
+              referrerPolicy="no-referrer"
+            />
+          )}
+
+          {!loading && (
+            user ? (
+              <button
+                onClick={logout}
+                className="flex items-center gap-2 px-4 py-1.5 rounded-xl text-sm font-medium cursor-pointer transition-all duration-200
+                  bg-[hsl(0,60%,55%)] text-white hover:bg-[hsl(0,60%,48%)] shadow-sm"
+              >
+                <LogOut size={16} />
+                Logout
+              </button>
+            ) : (
+              <button
+                onClick={signInWithGoogle}
+                className="flex items-center gap-2 ml-3 px-4 py-1.5 rounded-xl text-sm font-medium cursor-pointer transition-all duration-200
+                  bg-[hsl(260,50%,55%)] text-white hover:bg-[hsl(260,50%,48%)] shadow-sm"
+              >
+                <LogIn size={16} />
+                Login
+              </button>
+            )
+          )}
+        </div>
+      </header>
+
+      {/* Content row: sidebar + main */}
+      <div className="relative flex flex-1 overflow-hidden">
+
+        {/* Day-wise conversation sidebar */}
+        <div
+          className={cn(
+            "absolute md:relative z-30 h-full transition-all duration-300 ease-in-out flex flex-col",
+            "bg-white/60 backdrop-blur-2xl border-r border-[hsl(260,30%,85%)]/40",
+            sidebarOpen ? "w-96 translate-x-0" : "w-0 -translate-x-full md:w-96 md:translate-x-0"
+          )}
+        >
+          <div className="p-5 border-b border-[hsl(260,30%,85%)]/40 flex-shrink-0">
+            <h2 className="text-sm font-semibold tracking-wide uppercase text-[hsl(260,30%,40%)]">
+              Conversations
+            </h2>
+          </div>
+          <ScrollArea className="flex-1">
+            <div className="p-3 space-y-1">
+              {sampleConversations.map((conv) => (
+                <button
+                  key={conv.id}
+                  onClick={() => {
+                    setActiveConversation(conv);
+                    setSidebarOpen(false);
+                  }}
+                  className={cn(
+                    "w-full text-left px-4 py-3 rounded-xl transition-all duration-200 cursor-pointer",
+                    "hover:bg-[hsl(260,40%,90%)]/60",
+                    activeConversation.id === conv.id
+                      ? "bg-[hsl(260,50%,55%)]/10 border border-[hsl(260,50%,55%)]/20"
+                      : "border border-transparent"
+                  )}
+                >
+                  <p className="text-sm font-medium text-[hsl(260,30%,30%)]">{conv.label}</p>
+                  <p className="text-xs text-[hsl(260,20%,55%)] mt-0.5 truncate">
+                    {conv.messages[conv.messages.length - 1]?.text}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </ScrollArea>
+        </div>
+
+        {/* Overlay for mobile sidebar */}
+        {sidebarOpen && (
+          <div
+            className="fixed inset-0 z-20 bg-black/20 backdrop-blur-sm md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
+
+        {/* Main content */}
+        <div className="relative flex-1 flex flex-col items-center min-w-0 overflow-hidden">
 
         {/* Chat messages */}
         <div className="flex-1 w-full max-w-2xl overflow-hidden px-4">
@@ -231,6 +276,7 @@ const Index = () => {
           <span className="absolute -bottom-8 text-xs tracking-widest uppercase text-[hsl(260,30%,45%)]/60 font-light">
             {isListening ? "Listening…" : "Tap to speak"}
           </span>
+        </div>
         </div>
       </div>
     </div>
