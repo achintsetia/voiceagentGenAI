@@ -2,10 +2,10 @@ import { useState, useRef, useCallback } from "react";
 import { GoogleGenAI, Modality } from "@google/genai";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { app } from "@/firebase.js";
+import { createLogger } from "@/lib/logger";
 
 // All Cloud Functions are deployed to asia-south1.
 const functions = getFunctions(app, "asia-south1");
-import { createLogger } from "@/lib/logger";
 
 // Gemini Live model for real-time voice interactions.
 // Switch to "gemini-live-2.5-flash-preview" when it becomes available in your region.
@@ -16,10 +16,14 @@ const OUTPUT_SAMPLE_RATE = 24000; // Gemini Live output: 24 kHz PCM
 
 const log = createLogger("VoiceAgent");
 
-const SYSTEM_INSTRUCTION = `You are a warm, empathetic daily journal companion. Your purpose is to help the user reflect on their day through natural, conversational voice interactions.
+function buildSystemInstruction(userName: string | null): string {
+  const addressee = userName ? userName.split(" ")[0] : "there";
+  return `You are a warm, empathetic daily journal companion. Your purpose is to help ${userName ?? "the user"} reflect on their day through natural, conversational voice interactions.
+
+The user's name is ${userName ?? "unknown"}. Address them by their first name (${addressee}) naturally throughout the conversation — not in every sentence, but enough to make it feel personal.
 
 Guidelines:
-- Greet the user at the start of each session and ask how their day is going.
+- Greet ${addressee} warmly at the start of each session and ask how their day is going.
 - Ask open-ended, thoughtful questions about their activities, feelings, accomplishments, and challenges.
 - Listen attentively; refer back to things they mentioned earlier in the conversation to show you're paying attention.
 - Respond with empathy and encouragement — never judge.
@@ -28,6 +32,7 @@ Guidelines:
 - If the user mentions something repeatedly across sessions, acknowledge patterns with curiosity.
 - When the user wants to wrap up, offer a brief, positive summary of what they shared today.
 - Use a calm, supportive tone at all times. You are their trusted confidant.`;
+}
 
 export interface AgentMessage {
   id: string;
@@ -56,7 +61,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-export function useVoiceAgent() {
+export function useVoiceAgent(userName: string | null = null) {
   const [isListening, setIsListening] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
@@ -74,6 +79,10 @@ export function useVoiceAgent() {
   const playbackContextRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
 
+  // Connecting tone refs
+  const toneCtxRef = useRef<AudioContext | null>(null);
+  const toneIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // Accumulate assistant text across streaming parts until turnComplete
   const pendingAssistantTextRef = useRef<string>("");
 
@@ -83,6 +92,45 @@ export function useVoiceAgent() {
       ...prev,
       { id: crypto.randomUUID(), role, text: text.trim(), timestamp: new Date() },
     ]);
+  }, []);
+
+  // Play a soft two-note pulse every 1.2 s while connecting.
+  const playConnectingTone = useCallback(() => {
+    const ctx = new AudioContext();
+    toneCtxRef.current = ctx;
+
+    const playPulse = () => {
+      if (!toneCtxRef.current || toneCtxRef.current.state === "closed") return;
+      // Two overlapping sine tones (C5 + E5) for a gentle chord
+      [[523.25, 0], [659.25, 0.06]].forEach(([freq, delay]) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        const t = ctx.currentTime + delay;
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.12, t + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+        osc.start(t);
+        osc.stop(t + 0.48);
+      });
+    };
+
+    playPulse();
+    toneIntervalRef.current = setInterval(playPulse, 1200);
+    log.debug("Connecting tone started");
+  }, []);
+
+  const stopConnectingTone = useCallback(() => {
+    if (toneIntervalRef.current) {
+      clearInterval(toneIntervalRef.current);
+      toneIntervalRef.current = null;
+    }
+    toneCtxRef.current?.close();
+    toneCtxRef.current = null;
+    log.debug("Connecting tone stopped");
   }, []);
 
   const getPlaybackContext = useCallback(() => {
@@ -127,6 +175,8 @@ export function useVoiceAgent() {
   const stopSession = useCallback(() => {
     log.info("Stopping session — tearing down audio pipeline");
 
+    stopConnectingTone();
+
     // Tear down microphone pipeline
     processorRef.current?.disconnect();
     processorRef.current = null;
@@ -151,13 +201,13 @@ export function useVoiceAgent() {
     nextPlayTimeRef.current = 0;
     pendingAssistantTextRef.current = "";
 
-    setIsListening(false);
-    log.info("Session stopped");
-  }, []);
+  }, [stopConnectingTone]);
 
   const startSession = useCallback(async () => {
     setIsConnecting(true);
     setError(null);
+    log.info(`Starting session — userName received by hook: "${userName ?? "(null)"}"`);
+    playConnectingTone();
 
     try {
       // 1. Fetch the Gemini API key from the backend (requires Firebase Auth).
@@ -168,7 +218,7 @@ export function useVoiceAgent() {
       log.info("API key fetched successfully");
 
       // 2. Connect to Gemini Live API.
-      log.info(`Connecting to Gemini Live model: ${GEMINI_LIVE_MODEL}`);
+      log.info(`Connecting to Gemini Live model: ${GEMINI_LIVE_MODEL} (user: ${userName ?? "anonymous"})`);
       const ai = new GoogleGenAI({ apiKey });
       const session = await ai.live.connect({
         model: GEMINI_LIVE_MODEL,
@@ -177,7 +227,7 @@ export function useVoiceAgent() {
           inputAudioTranscription: {},   // transcribe user speech → show in UI
           outputAudioTranscription: {},  // transcribe agent audio → show in UI
           systemInstruction: {
-            parts: [{ text: SYSTEM_INSTRUCTION }],
+            parts: [{ text: buildSystemInstruction(userName) }],
           },
         },
         callbacks: {
@@ -284,18 +334,20 @@ export function useVoiceAgent() {
       silentGain.connect(audioCtx.destination);
       log.info(`Audio pipeline ready — input: ${INPUT_SAMPLE_RATE} Hz, output: ${OUTPUT_SAMPLE_RATE} Hz`);
 
+      stopConnectingTone();
       setIsListening(true);
       setIsConnecting(false);
       log.info("Session started — listening");
     } catch (err) {
       log.error("Failed to start session", err);
+      stopConnectingTone();
       const message =
         err instanceof Error ? err.message : "Failed to connect. Please try again.";
       setError(message);
       setIsConnecting(false);
       stopSession();
     }
-  }, [addMessage, enqueueAudio, stopSession]);
+  }, [addMessage, enqueueAudio, stopSession, playConnectingTone, stopConnectingTone, userName]);
 
   const toggleListening = useCallback(() => {
     if (isListening || isConnecting) {

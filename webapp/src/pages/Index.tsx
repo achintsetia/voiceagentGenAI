@@ -57,7 +57,7 @@ const Index = () => {
   const [activeConversationId, setActiveConversationId] = useState<string>(TODAY_ID);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { user, loading, signInWithGoogle, logout } = useAuth();
-  const { isListening, isConnecting, messages: agentMessages, error, toggleListening } = useVoiceAgent();
+  const { isListening, isConnecting, messages: agentMessages, error, toggleListening } = useVoiceAgent(user?.displayName ?? null);
 
   // Merge today's live messages with historical ones for the sidebar.
   const allConversations: Conversation[] = [
