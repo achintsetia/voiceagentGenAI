@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from "react";
-import { Mic, MessageSquare, ChevronLeft, User, Bot, LogIn, LogOut } from "lucide-react";
+import { Mic, MicOff, MessageSquare, ChevronLeft, User, Bot, LogIn, LogOut, Loader2 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
+import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 
 interface Message {
   id: string;
@@ -18,25 +19,15 @@ interface Conversation {
   messages: Message[];
 }
 
-const sampleConversations: Conversation[] = [
-  {
-    id: "1",
-    date: new Date(),
-    label: "Today",
-    messages: [
-      { id: "1a", role: "user", text: "Hey, what's the weather like today?", timestamp: new Date(Date.now() - 300000) },
-      { id: "1b", role: "assistant", text: "It's currently 22°C and sunny in your area. Perfect day to be outside!", timestamp: new Date(Date.now() - 290000) },
-      { id: "1c", role: "user", text: "Should I carry an umbrella?", timestamp: new Date(Date.now() - 200000) },
-      { id: "1d", role: "assistant", text: "No need! There's less than 5% chance of rain today. You're all clear.", timestamp: new Date(Date.now() - 190000) },
-    ],
-  },
+// Historical sample conversations shown in the sidebar.
+const historyConversations: Conversation[] = [
   {
     id: "2",
     date: new Date(Date.now() - 86400000),
     label: "Yesterday",
     messages: [
-      { id: "2a", role: "user", text: "Remind me to call the dentist tomorrow.", timestamp: new Date(Date.now() - 86400000) },
-      { id: "2b", role: "assistant", text: "Done! I've set a reminder for tomorrow morning at 9 AM to call the dentist.", timestamp: new Date(Date.now() - 86390000) },
+      { id: "2a", role: "user", text: "I had a really productive day at work today.", timestamp: new Date(Date.now() - 86400000) },
+      { id: "2b", role: "assistant", text: "That's wonderful to hear! What made it feel especially productive?", timestamp: new Date(Date.now() - 86390000) },
     ],
   },
   {
@@ -44,10 +35,8 @@ const sampleConversations: Conversation[] = [
     date: new Date(Date.now() - 172800000),
     label: "2 days ago",
     messages: [
-      { id: "3a", role: "user", text: "What's 15% of 240?", timestamp: new Date(Date.now() - 172800000) },
-      { id: "3b", role: "assistant", text: "15% of 240 is 36.", timestamp: new Date(Date.now() - 172790000) },
-      { id: "3c", role: "user", text: "And 20%?", timestamp: new Date(Date.now() - 172700000) },
-      { id: "3d", role: "assistant", text: "20% of 240 is 48.", timestamp: new Date(Date.now() - 172690000) },
+      { id: "3a", role: "user", text: "Feeling a bit stressed about the upcoming project deadline.", timestamp: new Date(Date.now() - 172800000) },
+      { id: "3b", role: "assistant", text: "It sounds like things are a bit overwhelming right now. Let's break it down together — what's the biggest challenge you're facing?", timestamp: new Date(Date.now() - 172790000) },
     ],
   },
   {
@@ -55,25 +44,46 @@ const sampleConversations: Conversation[] = [
     date: new Date(Date.now() - 432000000),
     label: "5 days ago",
     messages: [
-      { id: "4a", role: "user", text: "Play some relaxing music.", timestamp: new Date(Date.now() - 432000000) },
-      { id: "4b", role: "assistant", text: "Playing 'Calm Piano Collection' on your default music app. Enjoy!", timestamp: new Date(Date.now() - 431990000) },
+      { id: "4a", role: "user", text: "Had a great evening with friends.", timestamp: new Date(Date.now() - 432000000) },
+      { id: "4b", role: "assistant", text: "That sounds lovely! Time with good friends can really lift the spirit. What did you all get up to?", timestamp: new Date(Date.now() - 431990000) },
     ],
   },
 ];
 
+const TODAY_ID = "today";
+
 const Index = () => {
-  const [isListening, setIsListening] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [activeConversation, setActiveConversation] = useState<Conversation>(sampleConversations[0]);
+  const [activeConversationId, setActiveConversationId] = useState<string>(TODAY_ID);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { user, loading, signInWithGoogle, logout } = useAuth();
+  const { isListening, isConnecting, messages: agentMessages, error, toggleListening } = useVoiceAgent();
+
+  // Merge today's live messages with historical ones for the sidebar.
+  const allConversations: Conversation[] = [
+    {
+      id: TODAY_ID,
+      date: new Date(),
+      label: "Today",
+      messages: agentMessages as Message[],
+    },
+    ...historyConversations,
+  ];
+
+  const activeConversation =
+    allConversations.find((c) => c.id === activeConversationId) ?? allConversations[0];
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [activeConversation]);
+  }, [activeConversation.messages]);
 
   const formatTime = (date: Date) =>
     date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  const isActive = isListening || isConnecting;
+
+  // Show mic button only for "Today"; historical views are read-only.
+  const isToday = activeConversationId === TODAY_ID;
 
   return (
     <div className="fixed inset-0 flex flex-col bg-gradient-to-br from-[hsl(220,40%,95%)] via-[hsl(240,30%,92%)] to-[hsl(260,35%,90%)]">
@@ -145,29 +155,31 @@ const Index = () => {
         >
           <div className="p-5 border-b border-[hsl(260,30%,85%)]/40 flex-shrink-0">
             <h2 className="text-sm font-semibold tracking-wide uppercase text-[hsl(260,30%,40%)]">
-              Conversations
+              Journal
             </h2>
           </div>
           <ScrollArea className="flex-1">
             <div className="p-3 space-y-1">
-              {sampleConversations.map((conv) => (
+              {allConversations.map((conv) => (
                 <button
                   key={conv.id}
                   onClick={() => {
-                    setActiveConversation(conv);
+                    setActiveConversationId(conv.id);
                     setSidebarOpen(false);
                   }}
                   className={cn(
                     "w-full text-left px-4 py-3 rounded-xl transition-all duration-200 cursor-pointer",
                     "hover:bg-[hsl(260,40%,90%)]/60",
-                    activeConversation.id === conv.id
+                    activeConversationId === conv.id
                       ? "bg-[hsl(260,50%,55%)]/10 border border-[hsl(260,50%,55%)]/20"
                       : "border border-transparent"
                   )}
                 >
                   <p className="text-sm font-medium text-[hsl(260,30%,30%)]">{conv.label}</p>
                   <p className="text-xs text-[hsl(260,20%,55%)] mt-0.5 truncate">
-                    {conv.messages[conv.messages.length - 1]?.text}
+                    {conv.messages.length > 0
+                      ? conv.messages[conv.messages.length - 1]?.text
+                      : "No entries yet — tap the mic to start"}
                   </p>
                 </button>
               ))}
@@ -186,97 +198,133 @@ const Index = () => {
         {/* Main content */}
         <div className="relative flex-1 flex flex-col items-center min-w-0 overflow-hidden">
 
-        {/* Chat messages */}
-        <div className="flex-1 w-full max-w-2xl overflow-hidden px-4">
-          <ScrollArea className="h-full">
-            <div className="py-4 space-y-4">
-              {activeConversation.messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={cn(
-                    "flex gap-3 items-start",
-                    msg.role === "user" ? "flex-row-reverse" : "flex-row"
-                  )}
-                >
-                  {/* Avatar */}
-                  <div
-                    className={cn(
-                      "flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center",
-                      msg.role === "user"
-                        ? "bg-[hsl(260,50%,55%)]"
-                        : "bg-[hsl(220,50%,55%)]"
-                    )}
-                  >
-                    {msg.role === "user" ? (
-                      <User size={16} color="white" />
-                    ) : (
-                      <Bot size={16} color="white" />
-                    )}
-                  </div>
+          {/* Error banner */}
+          {error && (
+            <div className="w-full max-w-2xl mx-auto mt-3 px-4">
+              <div className="px-4 py-2.5 rounded-xl bg-[hsl(0,60%,55%)]/10 border border-[hsl(0,60%,55%)]/20 text-sm text-[hsl(0,60%,40%)]">
+                {error}
+              </div>
+            </div>
+          )}
 
-                  {/* Bubble */}
-                  <div
-                    className={cn(
-                      "max-w-[75%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed",
-                      msg.role === "user"
-                        ? "bg-[hsl(260,50%,55%)] text-white rounded-tr-md"
-                        : "bg-white/70 backdrop-blur-md text-[hsl(260,25%,25%)] border border-[hsl(260,30%,85%)]/50 rounded-tl-md"
-                    )}
-                  >
-                    {msg.text}
-                    <span
+          {/* Login prompt when trying to use mic without auth */}
+          {isToday && !user && !loading && (
+            <div className="w-full max-w-2xl mx-auto mt-3 px-4">
+              <div className="px-4 py-2.5 rounded-xl bg-[hsl(260,50%,55%)]/10 border border-[hsl(260,50%,55%)]/20 text-sm text-[hsl(260,30%,40%)]">
+                Please <button onClick={signInWithGoogle} className="underline font-medium cursor-pointer">sign in</button> to use the voice journal.
+              </div>
+            </div>
+          )}
+
+          {/* Chat messages */}
+          <div className="flex-1 w-full max-w-2xl overflow-hidden px-4">
+            <ScrollArea className="h-full">
+              <div className="py-4 space-y-4">
+                {activeConversation.messages.length === 0 && isToday ? (
+                  <div className="flex flex-col items-center justify-center h-48 gap-3 text-center">
+                    <Bot size={36} className="text-[hsl(260,40%,65%)] opacity-50" />
+                    <p className="text-sm text-[hsl(260,20%,55%)]">
+                      Your journal is empty today.<br />Tap the mic below to start your session.
+                    </p>
+                  </div>
+                ) : (
+                  activeConversation.messages.map((msg) => (
+                    <div
+                      key={msg.id}
                       className={cn(
-                        "block text-[10px] mt-1",
-                        msg.role === "user" ? "text-white/60" : "text-[hsl(260,20%,60%)]"
+                        "flex gap-3 items-start",
+                        msg.role === "user" ? "flex-row-reverse" : "flex-row"
                       )}
                     >
-                      {formatTime(msg.timestamp)}
-                    </span>
-                  </div>
-                </div>
+                      {/* Avatar */}
+                      <div
+                        className={cn(
+                          "flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center",
+                          msg.role === "user"
+                            ? "bg-[hsl(260,50%,55%)]"
+                            : "bg-[hsl(220,50%,55%)]"
+                        )}
+                      >
+                        {msg.role === "user" ? (
+                          <User size={16} color="white" />
+                        ) : (
+                          <Bot size={16} color="white" />
+                        )}
+                      </div>
+
+                      {/* Bubble */}
+                      <div
+                        className={cn(
+                          "max-w-[75%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed",
+                          msg.role === "user"
+                            ? "bg-[hsl(260,50%,55%)] text-white rounded-tr-md"
+                            : "bg-white/70 backdrop-blur-md text-[hsl(260,25%,25%)] border border-[hsl(260,30%,85%)]/50 rounded-tl-md"
+                        )}
+                      >
+                        {msg.text}
+                        <span
+                          className={cn(
+                            "block text-[10px] mt-1",
+                            msg.role === "user" ? "text-white/60" : "text-[hsl(260,20%,60%)]"
+                          )}
+                        >
+                          {formatTime(msg.timestamp)}
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+            </ScrollArea>
+          </div>
+
+          {/* Mic area — only visible for Today */}
+          {isToday && (
+            <div className="relative mb-12 mt-4 flex items-center justify-center flex-shrink-0">
+              {/* Ripple rings */}
+              {[...Array(4)].map((_, i) => (
+                <div
+                  key={i}
+                  className="absolute rounded-full border border-[hsl(260,40%,60%)]/15"
+                  style={{
+                    width: `${100 + i * 50}px`,
+                    height: `${100 + i * 50}px`,
+                    animation: `ripple ${isActive ? 1.5 : 3}s ease-out ${i * (isActive ? 0.3 : 0.6)}s infinite`,
+                  }}
+                />
               ))}
-              <div ref={messagesEndRef} />
+
+              {/* Mic button */}
+              <button
+                onClick={user ? toggleListening : signInWithGoogle}
+                disabled={isConnecting}
+                className="relative z-10 flex items-center justify-center w-16 h-16 rounded-full backdrop-blur-xl transition-all duration-500 cursor-pointer disabled:opacity-70 disabled:cursor-not-allowed"
+                style={{
+                  background: isListening
+                    ? "linear-gradient(135deg, hsl(280, 70%, 55%), hsl(320, 70%, 55%))"
+                    : "linear-gradient(135deg, hsl(260, 50%, 55%), hsl(220, 60%, 55%))",
+                  boxShadow: isListening
+                    ? "0 0 40px hsl(300, 70%, 50%, 0.35), 0 0 80px hsl(280, 70%, 50%, 0.15)"
+                    : "0 0 30px hsl(260, 50%, 55%, 0.25), 0 0 60px hsl(220, 60%, 55%, 0.1)",
+                  animation: isActive ? "breathe-active 1s ease-in-out infinite" : "breathe 2.5s ease-in-out infinite",
+                }}
+              >
+                {isConnecting ? (
+                  <Loader2 size={28} className="animate-spin" color="hsl(0, 0%, 100%)" />
+                ) : isListening ? (
+                  <MicOff size={28} className="transition-colors duration-300" color="hsl(0, 0%, 100%)" />
+                ) : (
+                  <Mic size={28} className="transition-colors duration-300" color="hsl(0, 0%, 100%)" />
+                )}
+              </button>
+
+              {/* Status text */}
+              <span className="absolute -bottom-8 text-xs tracking-widest uppercase text-[hsl(260,30%,45%)]/60 font-light">
+                {isConnecting ? "Connecting…" : isListening ? "Tap to stop" : "Tap to speak"}
+              </span>
             </div>
-          </ScrollArea>
-        </div>
-
-        {/* Mic area */}
-        <div className="relative mb-12 mt-4 flex items-center justify-center flex-shrink-0">
-          {/* Ripple rings */}
-          {[...Array(4)].map((_, i) => (
-            <div
-              key={i}
-              className="absolute rounded-full border border-[hsl(260,40%,60%)]/15"
-              style={{
-                width: `${100 + i * 50}px`,
-                height: `${100 + i * 50}px`,
-                animation: `ripple ${isListening ? 1.5 : 3}s ease-out ${i * (isListening ? 0.3 : 0.6)}s infinite`,
-              }}
-            />
-          ))}
-
-          {/* Mic button */}
-          <button
-            onClick={() => setIsListening((prev) => !prev)}
-            className="relative z-10 flex items-center justify-center w-16 h-16 rounded-full backdrop-blur-xl transition-all duration-500 cursor-pointer"
-            style={{
-              background: isListening
-                ? "linear-gradient(135deg, hsl(280, 70%, 55%), hsl(320, 70%, 55%))"
-                : "linear-gradient(135deg, hsl(260, 50%, 55%), hsl(220, 60%, 55%))",
-              boxShadow: isListening
-                ? "0 0 40px hsl(300, 70%, 50%, 0.35), 0 0 80px hsl(280, 70%, 50%, 0.15)"
-                : "0 0 30px hsl(260, 50%, 55%, 0.25), 0 0 60px hsl(220, 60%, 55%, 0.1)",
-              animation: isListening ? "breathe-active 1s ease-in-out infinite" : "breathe 2.5s ease-in-out infinite",
-            }}
-          >
-            <Mic size={28} className="transition-colors duration-300" color="hsl(0, 0%, 100%)" />
-          </button>
-
-          {/* Status text */}
-          <span className="absolute -bottom-8 text-xs tracking-widest uppercase text-[hsl(260,30%,45%)]/60 font-light">
-            {isListening ? "Listening…" : "Tap to speak"}
-          </span>
-        </div>
+          )}
         </div>
       </div>
     </div>
