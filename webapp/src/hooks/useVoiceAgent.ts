@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { GoogleGenAI, Modality } from "@google/genai";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { app } from "@/firebase.js";
@@ -69,11 +69,12 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-export function useVoiceAgent(userName: string | null = null) {
+export function useVoiceAgent(userName: string | null = null, userEmail: string | null = null) {
   const [isListening, setIsListening] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [sessionSavedAt, setSessionSavedAt] = useState<number | null>(null);
 
   // Session & microphone refs
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -93,6 +94,14 @@ export function useVoiceAgent(userName: string | null = null) {
 
   // Accumulate assistant text across streaming parts until turnComplete
   const pendingAssistantTextRef = useRef<string>("");
+
+  // Mirror of messages state — readable inside callbacks without stale closures
+  const messagesRef = useRef<AgentMessage[]>([]);
+
+  // Keep messagesRef in sync with messages state
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // Mic packet counter — increments every onaudioprocess frame, used for throttled logging
   const micPacketCountRef = useRef<number>(0);
@@ -252,7 +261,30 @@ export function useVoiceAgent(userName: string | null = null) {
     micPacketCountRef.current = 0;
     pendingGoodbyeRef.current = false;
 
-  }, [stopConnectingTone]);
+    // Persist the conversation to Firestore if there are messages
+    const snapshot = messagesRef.current;
+    if (userEmail && snapshot.length > 0) {
+      const timestamp = Date.now();
+      interface SaveSessionPayload {
+        timestamp: number;
+        messages: Array<Omit<AgentMessage, "timestamp"> & { timestamp: string }>;
+      }
+      const saveSessionFn = httpsCallable<
+        SaveSessionPayload,
+        { sessionId: string }
+      >(functions, "saveSession");
+      saveSessionFn({
+        timestamp,
+        messages: snapshot.map((m) => ({ ...m, timestamp: m.timestamp.toISOString() })),
+      })
+        .then(() => {
+          log.info(`Session saved (${snapshot.length} messages)`);
+          setSessionSavedAt(timestamp);
+        })
+        .catch((e) => log.error("Failed to save session", e));
+    }
+
+  }, [stopConnectingTone, userEmail]);
 
   const startSession = useCallback(async () => {
     setIsConnecting(true);
@@ -439,5 +471,6 @@ export function useVoiceAgent(userName: string | null = null) {
     error,
     toggleListening,
     clearMessages,
+    sessionSavedAt,
   };
 }

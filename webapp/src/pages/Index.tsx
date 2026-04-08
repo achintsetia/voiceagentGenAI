@@ -1,9 +1,11 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Mic, MicOff, MessageSquare, ChevronLeft, User, Bot, LogIn, LogOut, Loader2 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
+import { db } from "@/firebase.js";
+import { collection, getDocs, orderBy, query } from "firebase/firestore";
 
 interface Message {
   id: string;
@@ -19,47 +21,65 @@ interface Conversation {
   messages: Message[];
 }
 
-// Historical sample conversations shown in the sidebar.
-const historyConversations: Conversation[] = [
-  {
-    id: "2",
-    date: new Date(Date.now() - 86400000),
-    label: "Yesterday",
-    messages: [
-      { id: "2a", role: "user", text: "I had a really productive day at work today.", timestamp: new Date(Date.now() - 86400000) },
-      { id: "2b", role: "assistant", text: "That's wonderful to hear! What made it feel especially productive?", timestamp: new Date(Date.now() - 86390000) },
-    ],
-  },
-  {
-    id: "3",
-    date: new Date(Date.now() - 172800000),
-    label: "2 days ago",
-    messages: [
-      { id: "3a", role: "user", text: "Feeling a bit stressed about the upcoming project deadline.", timestamp: new Date(Date.now() - 172800000) },
-      { id: "3b", role: "assistant", text: "It sounds like things are a bit overwhelming right now. Let's break it down together — what's the biggest challenge you're facing?", timestamp: new Date(Date.now() - 172790000) },
-    ],
-  },
-  {
-    id: "4",
-    date: new Date(Date.now() - 432000000),
-    label: "5 days ago",
-    messages: [
-      { id: "4a", role: "user", text: "Had a great evening with friends.", timestamp: new Date(Date.now() - 432000000) },
-      { id: "4b", role: "assistant", text: "That sounds lovely! Time with good friends can really lift the spirit. What did you all get up to?", timestamp: new Date(Date.now() - 431990000) },
-    ],
-  },
-];
-
 const TODAY_ID = "today";
+
+function sessionLabel(date: Date): string {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfSession = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((startOfToday.getTime() - startOfSession.getTime()) / 86400000);
+  if (diffDays === 0) return `Today · ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays} days ago`;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
 
 const Index = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string>(TODAY_ID);
+  const [pastSessions, setPastSessions] = useState<Conversation[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { user, loading, signInWithGoogle, logout } = useAuth();
-  const { isListening, isConnecting, messages: agentMessages, error, toggleListening } = useVoiceAgent(user?.displayName ?? null);
+  const { isListening, isConnecting, messages: agentMessages, error, toggleListening, sessionSavedAt } = useVoiceAgent(
+    user?.displayName ?? null,
+    user?.email ?? null,
+  );
 
-  // Merge today's live messages with historical ones for the sidebar.
+  const fetchSessions = useCallback((email: string) => {
+    const sessionsRef = collection(db, "conversations", email, "sessions");
+    const q = query(sessionsRef, orderBy("timestamp", "desc"));
+    getDocs(q)
+      .then((snapshot) => {
+        const sessions: Conversation[] = snapshot.docs.map((doc) => {
+          const data = doc.data();
+          const date = new Date(data.timestamp as number);
+          return {
+            id: doc.id,
+            date,
+            label: sessionLabel(date),
+            messages: (data.messages as Array<{ id: string; role: "user" | "assistant"; text: string; timestamp: string }>).map(
+              (m) => ({ ...m, timestamp: new Date(m.timestamp) })
+            ),
+          };
+        });
+        setPastSessions(sessions);
+      })
+      .catch((e) => console.error("Failed to load sessions", e));
+  }, []);
+
+  // Fetch past sessions whenever the user changes.
+  useEffect(() => {
+    if (!user?.email) { setPastSessions([]); return; }
+    fetchSessions(user.email);
+  }, [user, fetchSessions]);
+
+  // Re-fetch after each newly saved session.
+  useEffect(() => {
+    if (!sessionSavedAt || !user?.email) return;
+    fetchSessions(user.email);
+  }, [sessionSavedAt, user, fetchSessions]);
+
+  // Merge today's live messages with fetched past sessions for the sidebar.
   const allConversations: Conversation[] = [
     {
       id: TODAY_ID,
@@ -67,7 +87,7 @@ const Index = () => {
       label: "Today",
       messages: agentMessages as Message[],
     },
-    ...historyConversations,
+    ...pastSessions,
   ];
 
   const activeConversation =
