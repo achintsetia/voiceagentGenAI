@@ -86,6 +86,9 @@ export function useVoiceAgent(userName: string | null = null) {
   // Accumulate assistant text across streaming parts until turnComplete
   const pendingAssistantTextRef = useRef<string>("");
 
+  // Mic packet counter — increments every onaudioprocess frame, used for throttled logging
+  const micPacketCountRef = useRef<number>(0);
+
   const addMessage = useCallback((role: "user" | "assistant", text: string) => {
     if (!text.trim()) return;
     setMessages((prev) => [
@@ -200,6 +203,7 @@ export function useVoiceAgent(userName: string | null = null) {
     playbackContextRef.current = null;
     nextPlayTimeRef.current = 0;
     pendingAssistantTextRef.current = "";
+    micPacketCountRef.current = 0;
 
   }, [stopConnectingTone]);
 
@@ -324,6 +328,11 @@ export function useVoiceAgent(userName: string | null = null) {
         sessionRef.current.sendRealtimeInput({
           audio: { data: b64, mimeType: `audio/pcm;rate=${INPUT_SAMPLE_RATE}` },
         });
+        micPacketCountRef.current += 1;
+        // Log every 50 packets (~12.8 s at 4096-sample frames / 16 kHz) to avoid flooding.
+        if (micPacketCountRef.current % 50 === 0) {
+          log.debug(`Mic TX: ${micPacketCountRef.current} packets sent (${(micPacketCountRef.current * 4096 / INPUT_SAMPLE_RATE).toFixed(1)}s of audio)`);
+        }
       };
 
       source.connect(processor);
