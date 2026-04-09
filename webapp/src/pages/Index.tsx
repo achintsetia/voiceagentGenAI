@@ -54,7 +54,7 @@ const Index = () => {
   const { user, loading, signInWithGoogle, logout } = useAuth();
   const { agentConfig, saveAgentConfig } = useAgentConfig(user ?? null);
   const { todos, loadingTodos, markDone, markOpen, deleteTodo } = useTodos(user ?? null);
-  const { isListening, isConnecting, messages: agentMessages, error, toggleListening, sessionSavedAt } = useVoiceAgent(
+  const { isListening, isConnecting, isLoadingMemories, messages: agentMessages, error, toggleListening, sessionSavedAt } = useVoiceAgent(
     user?.displayName ?? null,
     user?.email ?? null,
     agentConfig.agentName,
@@ -468,7 +468,9 @@ const Index = () => {
                   animation: isActive ? "breathe-active 1s ease-in-out infinite" : "breathe 2.5s ease-in-out infinite",
                 }}
               >
-                {isConnecting ? (
+                {isLoadingMemories ? (
+                  <span className="text-[10px] tracking-wider uppercase font-light">Loading memories…</span>
+                ) : isConnecting ? (
                   <Loader2 size={28} className="animate-spin" color="hsl(0, 0%, 100%)" />
                 ) : isListening ? (
                   <MicOff size={28} className="transition-colors duration-300" color="hsl(0, 0%, 100%)" />
@@ -479,7 +481,7 @@ const Index = () => {
 
               {/* Status text */}
               <span className="absolute -bottom-8 text-xs tracking-widest uppercase text-[hsl(260,30%,45%)]/60 font-light">
-                {isConnecting ? "Connecting…" : isListening ? "Tap to stop" : "Tap to speak"}
+                {isConnecting ? "Loading memories…" : isListening ? "Tap to stop" : "Tap to speak"}
               </span>
             </div>
           )}

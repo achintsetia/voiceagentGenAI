@@ -37,6 +37,7 @@ function buildSystemInstruction(
   userName: string | null,
   agentName: string,
   agentGender: AgentGender,
+  previousSummary: string | null,
 ): string {
   const addressee = userName ? userName.split(" ")[0] : "there";
   const genderClause =
@@ -45,6 +46,11 @@ function buildSystemInstruction(
       : agentGender === "male"
       ? "You present yourself with a calm, steady masculine presence."
       : "You present yourself with a calm, balanced presence.";
+
+  const previousContext = previousSummary
+    ? `\n\nContext from ${addressee}'s last session:\n"${previousSummary}"\n\nUsing the above context:\n- Shortly after your opening greeting, bring up one interesting, meaningful, or unresolved thing from their last session in a natural, curious way (e.g. "Last time you mentioned [topic] — how did that turn out?"). Choose the detail that feels most worth following up on.\n- Do not list everything from the summary — pick just one thread to open with.\n- Continue referencing the summary naturally if it becomes relevant later in the conversation.`
+    : "";
+
   return `You are ${agentName}, a warm, empathetic daily journal companion. ${genderClause}
 
 Guidelines:
@@ -56,7 +62,7 @@ Guidelines:
 - Gently prompt for deeper reflection when they share something significant (e.g., "That sounds meaningful — how did that make you feel?").
 - If the user mentions something repeatedly across sessions, acknowledge patterns with curiosity.
 - When the user wants to wrap up, offer a brief, positive summary of what they shared today.
-- Use a calm, supportive tone at all times. You are their trusted confidant.`;
+- Use a calm, supportive tone at all times. You are their trusted confidant.${previousContext}`;
 }
 
 export interface AgentMessage {
@@ -94,9 +100,12 @@ export function useVoiceAgent(
 ) {
   const [isListening, setIsListening] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isLoadingMemories, setIsLoadingMemories] = useState(false);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sessionSavedAt, setSessionSavedAt] = useState<number | null>(null);
+  const previousSummaryRef = useRef<string | null>(null);
+  const memoriesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Session & microphone refs
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -315,12 +324,45 @@ export function useVoiceAgent(
     playConnectingTone();
 
     try {
-      // 1. Fetch the Gemini API key from the backend (requires Firebase Auth).
-      log.info("Fetching API key from backend");
+      // 1. Fetch the Gemini API key and previous session summary in parallel.
+      // Show a "Loading memories" indicator only if the fetch takes longer than 1.2 s.
+      log.info("Fetching API key and previous session summary from backend");
       const fetchAPIKey = httpsCallable<void, { apiKey: string }>(functions, "fetchAPIKey");
-      const { data } = await fetchAPIKey();
-      const { apiKey } = data;
+      const getLastSessionSummaryFn = httpsCallable<void, { summary: string | null }>(functions, "getLastSessionSummary");
+
+      memoriesTimerRef.current = setTimeout(() => {
+        setIsLoadingMemories(true);
+        log.debug("Memory fetch taking >1.2 s — showing loading indicator");
+      }, 1200);
+
+      const [apiKeyResult, summaryResult] = await Promise.allSettled([
+        fetchAPIKey(),
+        getLastSessionSummaryFn(),
+      ]);
+
+      if (memoriesTimerRef.current) {
+        clearTimeout(memoriesTimerRef.current);
+        memoriesTimerRef.current = null;
+      }
+      setIsLoadingMemories(false);
+
+      if (apiKeyResult.status === "rejected") {
+        throw apiKeyResult.reason;
+      }
+      const { apiKey } = apiKeyResult.value.data;
       log.info("API key fetched successfully");
+
+      if (summaryResult.status === "fulfilled") {
+        previousSummaryRef.current = summaryResult.value.data.summary;
+        log.info(
+          previousSummaryRef.current
+            ? `Previous session summary loaded: "${previousSummaryRef.current.slice(0, 80)}…"`
+            : "No previous session summary found"
+        );
+      } else {
+        log.warn("Failed to fetch previous session summary — proceeding without it", summaryResult.reason);
+        previousSummaryRef.current = null;
+      }
 
       // 2. Connect to Gemini Live API.
       log.info(`Connecting to Gemini Live model: ${GEMINI_LIVE_MODEL} (user: ${userName ?? "anonymous"})`);
@@ -332,7 +374,7 @@ export function useVoiceAgent(
           inputAudioTranscription: {},   // transcribe user speech → show in UI
           outputAudioTranscription: {},  // transcribe agent audio → show in UI
           systemInstruction: {
-            parts: [{ text: buildSystemInstruction(userName, agentName, agentGender) }],
+            parts: [{ text: buildSystemInstruction(userName, agentName, agentGender, previousSummaryRef.current) }],
           },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           speechConfig: {
@@ -478,6 +520,11 @@ export function useVoiceAgent(
         err instanceof Error ? err.message : "Failed to connect. Please try again.";
       setError(message);
       setIsConnecting(false);
+      if (memoriesTimerRef.current) {
+        clearTimeout(memoriesTimerRef.current);
+        memoriesTimerRef.current = null;
+      }
+      setIsLoadingMemories(false);
       stopSession();
     }
   }, [addMessage, enqueueAudio, stopSession, playConnectingTone, stopConnectingTone, playEndCallTone, userName, agentName, agentGender]);
@@ -497,6 +544,7 @@ export function useVoiceAgent(
   return {
     isListening,
     isConnecting,
+    isLoadingMemories,
     messages,
     error,
     toggleListening,
