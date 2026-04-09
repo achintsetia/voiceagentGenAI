@@ -1,9 +1,18 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Mic, MicOff, MessageSquare, ChevronLeft, User, Bot, LogIn, LogOut, Loader2 } from "lucide-react";
+import { Mic, MicOff, MessageSquare, ChevronLeft, User, Bot, LogIn, LogOut, Loader2, Settings2 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
+import { useAgentConfig } from "@/hooks/useAgentConfig";
+import { CustomizeAgentDialog } from "@/components/CustomizeAgentDialog";
 import { db } from "@/firebase.js";
 import { collection, getDocs, orderBy, query } from "firebase/firestore";
 
@@ -38,11 +47,15 @@ const Index = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string>(TODAY_ID);
   const [pastSessions, setPastSessions] = useState<Conversation[]>([]);
+  const [customizeOpen, setCustomizeOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { user, loading, signInWithGoogle, logout } = useAuth();
+  const { agentConfig, saveAgentConfig } = useAgentConfig(user ?? null);
   const { isListening, isConnecting, messages: agentMessages, error, toggleListening, sessionSavedAt } = useVoiceAgent(
     user?.displayName ?? null,
     user?.email ?? null,
+    agentConfig.agentName,
+    agentConfig.agentGender,
   );
 
   const fetchSessions = useCallback((email: string) => {
@@ -129,25 +142,37 @@ const Index = () => {
         <div className="flex items-center gap-3">
           <span className="text-sm text-[hsl(260,25%,50%)]">{activeConversation.label}</span>
 
-          {!loading && user && (
-            <img
-              src={user.photoURL ?? ""}
-              alt={user.displayName ?? "User"}
-              className="w-8 h-8 rounded-full object-cover border-2 border-[hsl(260,50%,55%)]/40"
-              referrerPolicy="no-referrer"
-            />
-          )}
-
           {!loading && (
             user ? (
-              <button
-                onClick={logout}
-                className="flex items-center gap-2 px-4 py-1.5 rounded-xl text-sm font-medium cursor-pointer transition-all duration-200
-                  bg-[hsl(0,60%,55%)] text-white hover:bg-[hsl(0,60%,48%)] shadow-sm"
-              >
-                <LogOut size={16} />
-                Logout
-              </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(260,50%,55%)] cursor-pointer">
+                    <img
+                      src={user.photoURL ?? ""}
+                      alt={user.displayName ?? "User"}
+                      className="w-8 h-8 rounded-full object-cover border-2 border-[hsl(260,50%,55%)]/40 hover:border-[hsl(260,50%,55%)]/80 transition-colors"
+                      referrerPolicy="no-referrer"
+                    />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuItem
+                    onClick={() => setCustomizeOpen(true)}
+                    className="gap-2 cursor-pointer"
+                  >
+                    <Settings2 size={15} className="text-[hsl(260,40%,55%)]" />
+                    Customize Agent
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={logout}
+                    className="gap-2 text-[hsl(0,60%,50%)] focus:text-[hsl(0,60%,45%)] cursor-pointer"
+                  >
+                    <LogOut size={15} />
+                    Logout
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : (
               <button
                 onClick={signInWithGoogle}
@@ -347,6 +372,15 @@ const Index = () => {
           )}
         </div>
       </div>
+
+      {user && (
+        <CustomizeAgentDialog
+          open={customizeOpen}
+          onOpenChange={setCustomizeOpen}
+          currentConfig={agentConfig}
+          onSave={saveAgentConfig}
+        />
+      )}
     </div>
   );
 };

@@ -24,14 +24,31 @@ const TERMINAL_PHRASES = [
 
 const log = createLogger("VoiceAgent");
 
-function buildSystemInstruction(userName: string | null): string {
-  const addressee = userName ? userName.split(" ")[0] : "there";
-  return `You are a warm, empathetic daily journal companion. Your purpose is to help ${userName ?? "the user"} reflect on their day through natural, conversational voice interactions.
+type AgentGender = "neutral" | "female" | "male";
 
-The user's name is ${userName ?? "unknown"}. Address them by their first name (${addressee}) naturally throughout the conversation — not in every sentence, but enough to make it feel personal.
+// Maps gender preference to a Gemini Live prebuilt voice name.
+const VOICE_FOR_GENDER: Record<AgentGender, string> = {
+  neutral: "Puck",
+  female: "Aoede",
+  male: "Charon",
+};
+
+function buildSystemInstruction(
+  userName: string | null,
+  agentName: string,
+  agentGender: AgentGender,
+): string {
+  const addressee = userName ? userName.split(" ")[0] : "there";
+  const genderClause =
+    agentGender === "female"
+      ? "You present yourself with a warm, nurturing feminine energy."
+      : agentGender === "male"
+      ? "You present yourself with a calm, steady masculine presence."
+      : "You present yourself with a calm, balanced presence.";
+  return `You are ${agentName}, a warm, empathetic daily journal companion. ${genderClause}
 
 Guidelines:
-- Greet ${addressee} warmly at the start of each session and ask how their day is going.
+- At the very start of the session, introduce yourself by name (e.g. "Hi, I'm ${agentName}") and greet ${addressee} by their first name exactly once (e.g. "How's your day going, ${addressee}?"). Do not use their name again after this opening.
 - Ask open-ended, thoughtful questions about their activities, feelings, accomplishments, and challenges.
 - Listen attentively; refer back to things they mentioned earlier in the conversation to show you're paying attention.
 - Respond with empathy and encouragement — never judge.
@@ -69,7 +86,12 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-export function useVoiceAgent(userName: string | null = null, userEmail: string | null = null) {
+export function useVoiceAgent(
+  userName: string | null = null,
+  userEmail: string | null = null,
+  agentName: string = "Aria",
+  agentGender: AgentGender = "neutral",
+) {
   const [isListening, setIsListening] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
@@ -310,8 +332,16 @@ export function useVoiceAgent(userName: string | null = null, userEmail: string 
           inputAudioTranscription: {},   // transcribe user speech → show in UI
           outputAudioTranscription: {},  // transcribe agent audio → show in UI
           systemInstruction: {
-            parts: [{ text: buildSystemInstruction(userName) }],
+            parts: [{ text: buildSystemInstruction(userName, agentName, agentGender) }],
           },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: VOICE_FOR_GENDER[agentGender],
+              },
+            },
+          } as any,
         },
         callbacks: {
           onopen: () => {
@@ -450,7 +480,7 @@ export function useVoiceAgent(userName: string | null = null, userEmail: string 
       setIsConnecting(false);
       stopSession();
     }
-  }, [addMessage, enqueueAudio, stopSession, playConnectingTone, stopConnectingTone, playEndCallTone, userName]);
+  }, [addMessage, enqueueAudio, stopSession, playConnectingTone, stopConnectingTone, playEndCallTone, userName, agentName, agentGender]);
 
   const toggleListening = useCallback(() => {
     if (isListening || isConnecting) {
