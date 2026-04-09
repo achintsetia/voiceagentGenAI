@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Mic, MicOff, MessageSquare, ChevronLeft, User, Bot, LogIn, LogOut, Loader2, Settings2 } from "lucide-react";
+import { Mic, MicOff, MessageSquare, ChevronLeft, User, Bot, LogIn, LogOut, Loader2, Settings2, ListTodo, CheckSquare, Square, Trash2 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   DropdownMenu,
@@ -13,6 +13,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 import { useAgentConfig } from "@/hooks/useAgentConfig";
 import { CustomizeAgentDialog } from "@/components/CustomizeAgentDialog";
+import { useTodos } from "@/hooks/useTodos";
 import { db } from "@/firebase.js";
 import { collection, getDocs, orderBy, query } from "firebase/firestore";
 
@@ -45,12 +46,14 @@ function sessionLabel(date: Date): string {
 
 const Index = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<"journal" | "todos">("journal");
   const [activeConversationId, setActiveConversationId] = useState<string>(TODAY_ID);
   const [pastSessions, setPastSessions] = useState<Conversation[]>([]);
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { user, loading, signInWithGoogle, logout } = useAuth();
   const { agentConfig, saveAgentConfig } = useAgentConfig(user ?? null);
+  const { todos, loadingTodos, markDone, markOpen, deleteTodo } = useTodos(user ?? null);
   const { isListening, isConnecting, messages: agentMessages, error, toggleListening, sessionSavedAt } = useVoiceAgent(
     user?.displayName ?? null,
     user?.email ?? null,
@@ -126,21 +129,55 @@ const Index = () => {
       {/* Top bar — full width */}
       <header className="relative z-40 flex-shrink-0 flex items-center justify-between px-4 h-14 bg-white/60 backdrop-blur-2xl border-b border-[hsl(260,30%,85%)]/40">
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setSidebarOpen((p) => !p)}
-            className="p-2 rounded-lg hover:bg-[hsl(260,30%,85%)]/40 transition-colors cursor-pointer"
-          >
-            {sidebarOpen
-              ? <ChevronLeft size={20} className="text-[hsl(260,30%,40%)]" />
-              : <MessageSquare size={20} className="text-[hsl(260,30%,40%)]" />}
-          </button>
+          {activeTab === "journal" && (
+            <button
+              onClick={() => setSidebarOpen((p) => !p)}
+              className="p-2 rounded-lg hover:bg-[hsl(260,30%,85%)]/40 transition-colors cursor-pointer"
+            >
+              {sidebarOpen
+                ? <ChevronLeft size={20} className="text-[hsl(260,30%,40%)]" />
+                : <MessageSquare size={20} className="text-[hsl(260,30%,40%)]" />}
+            </button>
+          )}
           <span className="text-base font-semibold tracking-tight text-[hsl(260,30%,30%)]">
             Voice Agent
           </span>
+          {/* Tab switcher */}
+          <div className="flex items-center gap-0.5 ml-2 p-0.5 rounded-xl bg-[hsl(260,30%,88%)]/50">
+            <button
+              onClick={() => setActiveTab("journal")}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all duration-200 cursor-pointer",
+                activeTab === "journal"
+                  ? "bg-white text-[hsl(260,40%,40%)] shadow-sm"
+                  : "text-[hsl(260,25%,55%)] hover:text-[hsl(260,30%,35%)]"
+              )}
+            >
+              <MessageSquare size={13} />
+              Journal
+            </button>
+            <button
+              onClick={() => setActiveTab("todos")}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all duration-200 cursor-pointer",
+                activeTab === "todos"
+                  ? "bg-white text-[hsl(260,40%,40%)] shadow-sm"
+                  : "text-[hsl(260,25%,55%)] hover:text-[hsl(260,30%,35%)]"
+              )}
+            >
+              <ListTodo size={13} />
+              Todos
+              {todos.filter(t => t.status === "open").length > 0 && (
+                <span className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[hsl(260,50%,55%)] text-white text-[10px] flex items-center justify-center">
+                  {todos.filter(t => t.status === "open").length}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-sm text-[hsl(260,25%,50%)]">{activeConversation.label}</span>
+          {activeTab === "journal" && <span className="text-sm text-[hsl(260,25%,50%)]">{activeConversation.label}</span>}
 
           {!loading && (
             user ? (
@@ -190,7 +227,83 @@ const Index = () => {
       {/* Content row: sidebar + main */}
       <div className="relative flex flex-1 overflow-hidden">
 
+        {/* ── TODOS TAB ─────────────────────────────────────────── */}
+        {activeTab === "todos" && (
+          <div className="flex-1 flex flex-col items-center overflow-hidden">
+            <div className="w-full max-w-2xl flex-1 overflow-hidden px-4">
+              <ScrollArea className="h-full">
+                <div className="py-4 space-y-2">
+                  {!user && !loading && (
+                    <div className="flex flex-col items-center justify-center h-48 gap-3 text-center">
+                      <ListTodo size={36} className="text-[hsl(260,40%,65%)] opacity-50" />
+                      <p className="text-sm text-[hsl(260,20%,55%)]">
+                        Please <button onClick={signInWithGoogle} className="underline font-medium cursor-pointer">sign in</button> to see your todos.
+                      </p>
+                    </div>
+                  )}
+                  {user && loadingTodos && (
+                    <div className="flex items-center justify-center h-48">
+                      <Loader2 size={24} className="animate-spin text-[hsl(260,40%,65%)]" />
+                    </div>
+                  )}
+                  {user && !loadingTodos && todos.length === 0 && (
+                    <div className="flex flex-col items-center justify-center h-48 gap-3 text-center">
+                      <ListTodo size={36} className="text-[hsl(260,40%,65%)] opacity-50" />
+                      <p className="text-sm text-[hsl(260,20%,55%)]">
+                        No todos yet.<br />They'll appear here after your next journal session.
+                      </p>
+                    </div>
+                  )}
+                  {user && !loadingTodos && todos.map((todo) => (
+                    <div
+                      key={todo.id}
+                      className={cn(
+                        "group flex items-start gap-3 px-4 py-3 rounded-2xl border transition-all duration-200",
+                        todo.status === "closed"
+                          ? "bg-white/40 border-[hsl(260,30%,88%)]/40 opacity-60"
+                          : "bg-white/70 backdrop-blur-md border-[hsl(260,30%,85%)]/50"
+                      )}
+                    >
+                      {/* Toggle done */}
+                      <button
+                        onClick={() => todo.status === "open" ? markDone(todo.id) : markOpen(todo.id)}
+                        className="flex-shrink-0 mt-0.5 text-[hsl(260,40%,55%)] hover:text-[hsl(260,50%,45%)] transition-colors cursor-pointer"
+                      >
+                        {todo.status === "closed"
+                          ? <CheckSquare size={18} />
+                          : <Square size={18} />}
+                      </button>
+
+                      {/* Text */}
+                      <div className="flex-1 min-w-0">
+                        <p className={cn(
+                          "text-sm text-[hsl(260,25%,25%)] leading-relaxed",
+                          todo.status === "closed" && "line-through text-[hsl(260,15%,55%)]"
+                        )}>
+                          {todo.text}
+                        </p>
+                        <p className="text-[10px] text-[hsl(260,20%,60%)] mt-1">
+                          {new Date(todo.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                        </p>
+                      </div>
+
+                      {/* Delete */}
+                      <button
+                        onClick={() => deleteTodo(todo.id)}
+                        className="flex-shrink-0 mt-0.5 text-[hsl(260,15%,65%)] hover:text-[hsl(0,60%,50%)] opacity-0 group-hover:opacity-100 transition-all duration-150 cursor-pointer"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </div>
+          </div>
+        )}
+
         {/* Day-wise conversation sidebar */}
+        {activeTab === "journal" && <>
         <div
           className={cn(
             "absolute md:relative z-30 h-full transition-all duration-300 ease-in-out flex flex-col",
@@ -371,6 +484,7 @@ const Index = () => {
             </div>
           )}
         </div>
+        </>}
       </div>
 
       {user && (
