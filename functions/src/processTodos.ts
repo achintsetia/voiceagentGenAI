@@ -30,23 +30,30 @@ interface GeminiTodoItem {
 }
 
 /**
- * Builds a prompt that asks Gemini to extract action items from a journal conversation.
+ * Builds a prompt that asks Gemini to extract action items from a journal conversation,
+ * excluding anything already present in the user's existing to-do list.
  * @param {SessionMessage[]} messages - The conversation messages to process.
+ * @param {string[]} existingTodos - The user's current to-do list texts.
  * @return {string} The prompt string to send to Gemini.
  */
-function buildExtractionPrompt(messages: SessionMessage[]): string {
+function buildExtractionPrompt(messages: SessionMessage[], existingTodos: string[]): string {
   const transcript = messages
     .map((m) => `${m.role === "user" ? "User" : "Agent"}: ${m.text}`)
     .join("\n");
 
+  const existingSection = existingTodos.length > 0 ?
+    `The user already has the following to-do items — do NOT include anything that means the same thing, even if worded differently:\n${existingTodos.map((t, i) => `${i + 1}. ${t}`).join("\n")}\n\n` :
+    "";
+
   return `You are an assistant that extracts actionable to-do items from a journal conversation.
 
-Read the conversation below and identify every concrete action, task, or commitment the user mentioned — things they want to do, need to do, or said they would do.
+${existingSection}Read the conversation below and identify every concrete action, task, or commitment the user mentioned — things they want to do, need to do, or said they would do.
 
 Rules:
 - Only extract clear, actionable items (not general feelings or observations).
 - Write each item as a short, actionable phrase starting with a verb (e.g. "Call the dentist", "Finish the project report").
-- If there are no actionable items, return an empty array.
+- Do not include items already covered by the existing list above, even if worded differently.
+- If there are no new actionable items, return an empty array.
 - Return ONLY a valid JSON array of objects with a single "text" field and nothing else. No markdown, no explanation.
 
 Example output:
@@ -86,13 +93,24 @@ export const processTodos = onDocumentCreated(
 
     logger.info(`processTodos: processing session ${sessionId} for ${userEmail} (${messages.length} messages)`);
 
+    const db = getFirestore();
+
+    // Fetch existing todos before the LLM call so we can pass them as context
+    const existingSnap = await db
+      .collection("todos")
+      .doc(userEmail)
+      .collection("items")
+      .get();
+    const existingTodos = existingSnap.docs.map((d) => (d.data().text as string ?? "").trim());
+    logger.info(`processTodos: ${existingTodos.length} existing todos loaded for context`);
+
     let todoTexts: GeminiTodoItem[] = [];
 
     try {
       const ai = new GoogleGenAI({apiKey});
       const response = await ai.models.generateContent({
         model: GEMINI_MODEL,
-        contents: buildExtractionPrompt(messages),
+        contents: buildExtractionPrompt(messages, existingTodos),
       });
 
       const raw = response.text?.trim() ?? "[]";
@@ -116,7 +134,6 @@ export const processTodos = onDocumentCreated(
       return;
     }
 
-    const db = getFirestore();
     const batch = db.batch();
     const timestamp = Date.now();
 
@@ -141,6 +158,6 @@ export const processTodos = onDocumentCreated(
     }
 
     await batch.commit();
-    logger.info(`processTodos: saved ${todoTexts.length} todos for ${userEmail} from session ${sessionId}`);
+    logger.info(`processTodos: saved ${todoTexts.length} new todos for ${userEmail} from session ${sessionId}`);
   }
 );

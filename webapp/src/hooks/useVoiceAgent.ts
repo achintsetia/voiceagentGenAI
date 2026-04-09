@@ -1,7 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, FunctionResponse, Type } from "@google/genai";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { app } from "@/firebase.js";
+import {
+  collection,
+  getDocs,
+  doc,
+  addDoc,
+  updateDoc,
+  serverTimestamp,
+  orderBy,
+  query,
+} from "firebase/firestore";
+import { app, db } from "@/firebase.js";
 import { createLogger } from "@/lib/logger";
 
 // All Cloud Functions are deployed to asia-south1.
@@ -13,6 +23,58 @@ const GEMINI_LIVE_MODEL = "gemini-3.1-flash-live-preview";
 
 const INPUT_SAMPLE_RATE = 16000;  // Gemini Live input: 16 kHz PCM
 const OUTPUT_SAMPLE_RATE = 24000; // Gemini Live output: 24 kHz PCM
+
+// ── Tool declarations exposed to the Gemini Live model ──────────────────────
+const AGENT_TOOLS = [
+  {
+    functionDeclarations: [
+      {
+        name: "get_todos",
+        description:
+          "Retrieve the user's current to-do list. " +
+          "Call this whenever the user asks what tasks they have, wants a reminder of open items, " +
+          "or before suggesting they add/complete something.",
+        parameters: { type: Type.OBJECT, properties: {} },
+      },
+      {
+        name: "update_todo",
+        description:
+          "Update the status of a single to-do item. " +
+          "Use 'closed' to mark it done and 'open' to reopen it.",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            todo_id: {
+              type: Type.STRING,
+              description: "The ID of the to-do item to update.",
+            },
+            status: {
+              type: Type.STRING,
+              description: "The new status for the item: 'open' or 'closed'.",
+            },
+          },
+          required: ["todo_id", "status"],
+        },
+      },
+      {
+        name: "add_todo",
+        description:
+          "Add a new to-do item to the user's list. " +
+          "Call this when the user mentions a task, goal, or commitment they want to remember or track.",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            text: {
+              type: Type.STRING,
+              description: "A short, actionable description of the task, starting with a verb (e.g. 'Call the dentist').",
+            },
+          },
+          required: ["text"],
+        },
+      },
+    ],
+  },
+];
 
 // Phrases that signal the user wants to end the session.
 const TERMINAL_PHRASES = [
@@ -62,7 +124,15 @@ Guidelines:
 - Gently prompt for deeper reflection when they share something significant (e.g., "That sounds meaningful — how did that make you feel?").
 - If the user mentions something repeatedly across sessions, acknowledge patterns with curiosity.
 - When the user wants to wrap up, offer a brief, positive summary of what they shared today.
-- Use a calm, supportive tone at all times. You are their trusted confidant.${previousContext}`;
+- Use a calm, supportive tone at all times. You are their trusted confidant.
+
+To-do list tools:
+- You have access to three tools: get_todos, add_todo, and update_todo.
+- Call get_todos whenever the user asks about their tasks, wants to know what's on their list, or you think reviewing it would be helpful.
+- Call add_todo when the user mentions a task, goal, or commitment they want to track — even mid-conversation (e.g. if they say "I need to call my doctor", add it). Always confirm aloud after adding (e.g. "I've added 'Call the doctor' to your list!").
+- Call update_todo to mark an item done (status: closed) or reopen it (status: open) when the user says they completed something or wants to revisit it.
+- When listing todos, read them aloud naturally (e.g. "You have three open tasks: call the dentist, finish the report, and buy groceries.").
+- After marking a todo as done, acknowledge it warmly (e.g. "Great, I've marked that as done!").${previousContext}`;
 }
 
 export interface AgentMessage {
@@ -373,6 +443,7 @@ export function useVoiceAgent(
           responseModalities: [Modality.AUDIO],
           inputAudioTranscription: {},   // transcribe user speech → show in UI
           outputAudioTranscription: {},  // transcribe agent audio → show in UI
+          tools: AGENT_TOOLS,
           systemInstruction: {
             parts: [{ text: buildSystemInstruction(userName, agentName, agentGender, previousSummaryRef.current) }],
           },
@@ -421,6 +492,72 @@ export function useVoiceAgent(
             if (outputTranscript) {
               log.debug(`Output transcription: "${outputTranscript}"`);
               pendingAssistantTextRef.current += outputTranscript;
+            }
+
+            // Handle tool calls (function calling)
+            if (msg.toolCall?.functionCalls?.length) {
+              log.info(`Tool call received: ${msg.toolCall.functionCalls.map((f) => f.name).join(", ")}`);
+              void (async () => {
+                const responses: FunctionResponse[] = await Promise.all(
+                  msg.toolCall!.functionCalls!.map(async (fc) => {
+                    const id = fc.id ?? "";
+                    const name = fc.name ?? "";
+                    try {
+                      if (name === "get_todos") {
+                        if (!userEmail) return { id, name, response: { todos: [] } };
+                        const q = query(
+                          collection(db, "todos", userEmail, "items"),
+                          orderBy("timestamp", "desc")
+                        );
+                        const snap = await getDocs(q);
+                        const todos = snap.docs.map((d) => ({
+                          id: d.id,
+                          text: d.data().text as string,
+                          status: d.data().status as string,
+                        }));
+                        log.info(`get_todos: returning ${todos.length} items`);
+                        return { id, name, response: { todos } };
+                      }
+
+                      if (name === "update_todo") {
+                        const args = fc.args as { todo_id: string; status: "open" | "closed" } | undefined;
+                        if (!userEmail || !args?.todo_id || !args?.status) {
+                          return { id, name, response: { error: "Missing required arguments." } };
+                        }
+                        const ref = doc(db, "todos", userEmail, "items", args.todo_id);
+                        await updateDoc(ref, { status: args.status });
+                        log.info(`update_todo: ${args.todo_id} → ${args.status}`);
+                        return { id, name, response: { success: true, todo_id: args.todo_id, status: args.status } };
+                      }
+
+                      if (name === "add_todo") {
+                        const args = fc.args as { text: string } | undefined;
+                        if (!userEmail || !args?.text?.trim()) {
+                          return { id, name, response: { error: "Missing required argument: text." } };
+                        }
+                        const newRef = await addDoc(
+                          collection(db, "todos", userEmail, "items"),
+                          {
+                            text: args.text.trim(),
+                            status: "open",
+                            timestamp: Date.now(),
+                            sourceSessionId: "voice",
+                            createdAt: serverTimestamp(),
+                          }
+                        );
+                        log.info(`add_todo: created ${newRef.id} — "${args.text.trim()}"`);
+                        return { id, name, response: { success: true, todo_id: newRef.id, text: args.text.trim() } };
+                      }
+
+                      return { id, name, response: { error: `Unknown tool: ${name}` } };
+                    } catch (err) {
+                      log.error(`Tool execution error for ${name}`, err);
+                      return { id, name, response: { error: "Tool execution failed." } };
+                    }
+                  })
+                );
+                sessionRef.current?.sendToolResponse({ functionResponses: responses });
+              })();
             }
 
             // Flush assistant message when turn is complete
